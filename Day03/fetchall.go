@@ -22,7 +22,7 @@ func main() {
 		fmt.Println(<-ch) // receive from channel ch
 	}
 
-	fmt.Print("%.2fs elapsed\n", time.Since(start).Seconds())
+	fmt.Printf("%.2fs elapsed\n", time.Since(start).Seconds())
 }
 
 func fetch(url string, ch chan<- string) {
