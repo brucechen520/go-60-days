@@ -1,5 +1,7 @@
 package main
 
+// ref: https://go.cyub.vip/feature/panic-recover/
+
 import (
 	"fmt"
 	"sync"
