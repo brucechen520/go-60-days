@@ -8,6 +8,7 @@ import (
 	"os"
 )
 
+// ref https://go.dev/tour/moretypes/18
 func Pic(dx, dy int) [][]uint8 {
 	picture := make([][]uint8, dy)
 
@@ -15,7 +16,7 @@ func Pic(dx, dy int) [][]uint8 {
 		picture[y] = make([]uint8, dx)
 
 		for x := 0; x < dx; x++ {
-			picture[y][x] = uint8(x ^ y)
+			picture[y][x] = uint8(x ^ y) // try (x+y)/2, x*y, and x^y.
 		}
 	}
 
