@@ -47,7 +47,7 @@ func saveImage(filename string, data [][]uint8) error {
 	return png.Encode(f, m)
 }
 
-func printSlice(s []int) {
+func printSlice[T any](s []T) {
 	fmt.Printf("len=%d cap=%d %v\n", len(s), cap(s), s)
 }
 
@@ -86,6 +86,9 @@ func main() {
 
 	pow = append(pow, 7, 8, 9)
 	printSlice(pow)
+
+	people := []string{"Bob", "Lily"}
+	printSlice(people)
 
 	// saveImage("slice/output2.png", Pic(256, 256))
 }
