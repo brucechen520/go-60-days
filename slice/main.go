@@ -90,5 +90,16 @@ func main() {
 	people := []string{"Bob", "Lily"}
 	printSlice(people)
 
+	// 💥 PANIC: Runtime Error
+	p := make([]int, 3, 5) // len=3, 索引只有 0, 1, 2
+	fmt.Println(p[3])      // 💥 Panic: runtime error: index out of range [3] with length 3
+	// fmt.Println(p[:8]) // 💥 panic: runtime error: slice bounds out of range [:8] with capacity 5
+
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Println("recover the index out of range: ", r)
+		}
+	}()
+
 	// saveImage("slice/output2.png", Pic(256, 256))
 }
