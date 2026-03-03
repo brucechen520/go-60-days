@@ -83,5 +83,8 @@ func main() {
 	}
 	printSlice(pow)
 
+	pow = append(pow, 7, 8, 9)
+	printSlice(pow)
+
 	// saveImage("slice/output2.png", Pic(256, 256))
 }
