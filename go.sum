@@ -1,2 +1,6 @@
+github.com/trilogy-group/kayako-bluemonday v0.0.0-20180221084351-e4f82faea2fe h1:MbmgTk6Az/ao41gGHnB0/UswgZ36GAawAD1CiGJiKn0=
+github.com/trilogy-group/kayako-bluemonday v0.0.0-20180221084351-e4f82faea2fe/go.mod h1:4JeY5wmFUpIyxtY9qRxPlE70lJh1THixZDzJvPKTiCQ=
+golang.org/x/net v0.52.0 h1:He/TN1l0e4mmR3QqHMT2Xab3Aj3L9qjbhRm78/6jrW0=
+golang.org/x/net v0.52.0/go.mod h1:R1MAz7uMZxVMualyPXb+VaqGSa3LIaUqk0eEt3w36Sw=
 golang.org/x/tour v0.1.0 h1:OWzbINRoGf1wwBhKdFDpYwM88NM0d1SL/Nj6PagS6YE=
 golang.org/x/tour v0.1.0/go.mod h1:DUZC6G8mR1AXgXy73r8qt/G5RsefKIlSj6jBMc8b9Wc=

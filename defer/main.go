@@ -3,14 +3,14 @@ package main
 import "fmt"
 
 func main() {
-	defer A()
-	defer C()
-	fmt.Println(test())
+	// defer A()
+	// defer C()
+	// fmt.Println(test())
 
 	a()
 	b()
-	fmt.Println()
-	fmt.Println("c():", c())
+	// fmt.Println()
+	// fmt.Println("c():", c())
 }
 
 // defer 3 rules: https://go.dev/blog/defer-panic-and-recover

@@ -63,4 +63,8 @@ func main() {
 	}
 	fmt.Println("Implement Infinite stream reader!")
 	reader.Validate(MyReader{})
+
+	var qqq []string
+	fmt.Println(len(qqq))
+	fmt.Println(qqq == nil)
 }

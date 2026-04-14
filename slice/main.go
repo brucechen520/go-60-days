@@ -52,6 +52,9 @@ func printSlice[T any](s []T) {
 }
 
 func main() {
+	i := [1]int{1}
+	fmt.Println(i)
+
 	s := []int{2, 3, 5, 7, 11, 13}
 	printSlice(s)
 
