@@ -76,6 +76,55 @@ func (c *COWCache) Set(userID string, perms []string) {
 	c.v.Store(&newM)     // 原子替換，讀者下次 Load看到新表
 }
 
+// ---- 版本 C：分片鎖（sharded lock）----
+// map 切成 shardCount 片、各一把 RWMutex。key hash 決定進哪片；讀寫都只鎖「一片」。
+// 好處：鎖競爭降到 1/N，不同 key 的寫可並行、寫不複製全表 → 表大/寫也不少的首選。
+// 代價：跨片操作（整表 Reload、算全表大小）要鎖全部片，較麻煩。
+
+const shardCount = 256 // 建議 2 的次方，方便用位遮罩取代取模
+
+type shard struct {
+	mu sync.RWMutex
+	m  map[string][]string
+}
+
+type ShardedCache struct {
+	shards [shardCount]shard
+}
+
+func NewSharded() *ShardedCache {
+	c := &ShardedCache{}
+	for i := range c.shards {
+		c.shards[i].m = make(map[string][]string)
+	}
+	return c
+}
+
+// shard 用 FNV-1a hash 把 key 映射到某一片（reader 計數、鎖競爭都被打散到各片）。
+func (c *ShardedCache) shard(key string) *shard {
+	var h uint32 = 2166136261
+	for i := 0; i < len(key); i++ {
+		h ^= uint32(key[i])
+		h *= 16777619
+	}
+	return &c.shards[h&(shardCount-1)] // shardCount 為 2 次方 → 位遮罩比 % 快
+}
+
+func (c *ShardedCache) Get(userID string) ([]string, bool) {
+	s := c.shard(userID)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	p, ok := s.m[userID]
+	return p, ok
+}
+
+func (c *ShardedCache) Set(userID string, perms []string) {
+	s := c.shard(userID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.m[userID] = perms
+}
+
 func main() {
 	cache := New()
 	cache.Set("user1", []string{"read", "write"})
@@ -134,5 +183,31 @@ func main() {
 	wg2.Wait()
 	fmt.Println("[COW] 完成：讀零鎖 + 單寫者，無 fatal error")
 
-	fmt.Println("驗證競態：go run -race .（兩版皆應無 race 警告）")
+	// ---- 版本 C：分片鎖（讀多寫少綜合最優）----
+	sharded := NewSharded()
+	sharded.Set("user1", []string{"read", "write"})
+
+	var wg3 sync.WaitGroup
+	// 讀多：RLock 但打散到 256 片，reader 計數競爭降 1/256
+	for r := 0; r < 50; r++ {
+		wg3.Add(1)
+		go func() {
+			defer wg3.Done()
+			for i := 0; i < 20; i++ {
+				sharded.Get("user1")
+			}
+		}()
+	}
+	// 寫：只鎖命中的那一片，其他 255 片照跑；無 lost update（每片獨立鎖精確保護）
+	wg3.Add(1)
+	go func() {
+		defer wg3.Done()
+		for i := 0; i < 10; i++ {
+			sharded.Set("user1", []string{"read", "write", "delete"})
+		}
+	}()
+	wg3.Wait()
+	fmt.Println("[Sharded] 完成：讀打散 + 寫只鎖一片，無 fatal error")
+
+	fmt.Println("驗證競態：go run -race .（三版皆應無 race 警告）")
 }

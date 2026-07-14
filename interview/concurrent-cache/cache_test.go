@@ -230,3 +230,87 @@ func BenchmarkRWMutexLoad(b *testing.B) { benchReadHeavyAt(b, seeded()) }
 // BenchmarkCOWLoad：COW 版逐級加壓。併發越高、寫者越多 → 複製整表越頻繁，
 // 預期 B/op 高且 ns/op 隨併發劣化得比 RWMutex 明顯（COW 寫成本 O(N) 的懲罰）。
 func BenchmarkCOWLoad(b *testing.B) { benchReadHeavyAt(b, seededCOW()) }
+
+// ---- 版本 C：分片鎖（sharded lock）壓測，跟 A/B 同條件對比 ----
+
+func seededSharded() *ShardedCache {
+	c := NewSharded()
+	for i := 0; i < benchUsers; i++ {
+		c.Set("user"+strconv.Itoa(i), []string{"read", "write"})
+	}
+	return c
+}
+
+// BenchmarkShardedGetParallel：純讀並行。reader 計數被打散到 256 片，
+// 高併發下 cache-line 競爭比單把 RWMutex 輕很多。
+func BenchmarkShardedGetParallel(b *testing.B) {
+	c := seededSharded()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			c.Get("user" + strconv.Itoa(i%benchUsers))
+			i++
+		}
+	})
+}
+
+// BenchmarkShardedReadHeavyParallel：讀多寫少。寫只鎖一片、不複製全表 →
+// 預期 B/op 跟 RWMutex 一樣低（無 COW 的複製稅），寫並行度又比單把 RWMutex 高。
+func BenchmarkShardedReadHeavyParallel(b *testing.B) {
+	c := seededSharded()
+	var writes int64
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			if i%1000 == 0 {
+				c.Set("user"+strconv.Itoa(i%benchUsers), []string{"read"})
+				atomic.AddInt64(&writes, 1)
+			} else {
+				c.Get("user" + strconv.Itoa(i%benchUsers))
+			}
+			i++
+		}
+	})
+	_ = writes
+}
+
+// BenchmarkShardedLoad：分片鎖版逐級加壓（1k~100k）。
+// 預期高併發下 ns/op 最穩（鎖競爭 1/N），且 B/op 低（不複製全表）——
+// 兼顧「讀擴展性」與「寫不吃記憶體」，是大表高併發的綜合最優。
+func BenchmarkShardedLoad(b *testing.B) { benchReadHeavyAt(b, seededSharded()) }
+
+// TestShardedConcurrentNoRace：分片鎖 race 壓測。跟版本 A 一樣有精確語意
+// （每片獨立鎖保護），配 go test -race 證明 thread-safe。
+func TestShardedConcurrentNoRace(t *testing.T) {
+	c := seededSharded()
+	var wg sync.WaitGroup
+	const readers, writers, iters = 100, 8, 2000
+
+	for r := 0; r < readers; r++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for i := 0; i < iters; i++ {
+				c.Get("user" + strconv.Itoa((id+i)%benchUsers))
+			}
+		}(r)
+	}
+	for w := 0; w < writers; w++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for i := 0; i < iters; i++ {
+				c.Set("user"+strconv.Itoa((id+i)%benchUsers), []string{"read", "write"})
+			}
+		}(w)
+	}
+	wg.Wait()
+
+	// 分片鎖無 lost update（每片獨立鎖精確保護），可斷言寫入生效
+	c.Set("verify", []string{"ok"})
+	if p, ok := c.Get("verify"); !ok || len(p) != 1 || p[0] != "ok" {
+		t.Fatalf("寫入未生效：%v ok=%v", p, ok)
+	}
+}

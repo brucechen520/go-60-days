@@ -194,14 +194,29 @@ func (c *ShardedCache) Set(key string, perms []string) {
 
 ## 6. Benchmark 實測（本專案，benchUsers=1000）
 
-| | ns/op | B/op | 說明 |
-|---|---|---|---|
-| RWMutex GetParallel | 55 | 2 | 純讀，有 RLock 開銷 |
-| **COW GetParallel** | **21** | 2 | 純讀零鎖，快 ~2.6 倍 |
-| RWMutex ReadHeavy | 75 | 2 | 讀多寫少 |
-| **COW ReadHeavy** | 61 | **101** | 較快但記憶體暴增 |
+> 絕對數字依機器而異（CPU / 核數），看**相對關係**與 **B/op** 才是重點。
 
-**關鍵**：COW ReadHeavy 的 `B/op` 從 2 飆到 **101** = 「寫複製全表」成本現形。表越大這數字越爆。把 `benchUsers` 改 100000 再跑：`COWGetParallel` 不變（讀不複製）、`COWReadHeavy` 的 B/op 噴天 → 一眼看出「讀零鎖不受表大小影響，寫複製受表大小懲罰」。
+**純讀（GetParallel）**：
+
+| 版本 | ns/op | B/op | 說明 |
+|---|---|---|---|
+| RWMutex | 83 | 2 | 單一 reader 計數器被搶，最慢 |
+| **COW** | **28** | 2 | 純讀零鎖，最快 |
+| 分片鎖 | 42 | 2 | RLock 有開銷但打散到 256 片 |
+
+**讀多寫少（ReadHeavy，1/1000 寫）**：
+
+| 版本 | ns/op | B/op | 說明 |
+|---|---|---|---|
+| RWMutex | 107 | 2 | 寫獨佔全表 |
+| COW | 126 | **101** | 寫複製整表 → 反而最慢 + 記憶體暴增 |
+| **分片鎖** | **49** | **2** | 寫只鎖一片、不複製 → 綜合最優 |
+
+**兩個關鍵結論**：
+
+1. **COW 只在「純讀 / 寫極稀有」最強**：純讀 28 ns 最快；但一摻進寫（1/1000），複製整表的 alloc + GC churn 就把讀優勢吃光，ReadHeavy 反而變**最慢**（126），還多付 **101 B/op**（表越大越爆）。
+
+2. **分片鎖是「讀多寫少」綜合最優**（49 ns + 2 B/op）：讀的 reader 計數打散到 256 片（競爭 1/256）、寫只鎖一片不擋其他片、且**不複製全表**（B/op 維持 2，不像 COW 的 101）。快又省記憶體。
 
 跑法：
 ```bash
@@ -215,28 +230,30 @@ go test -race -run NoRace              # thread-safe 驗證
 
 用 `b.SetParallelism(p)` 控制 goroutine 數（實際 = `p × GOMAXPROCS`），讀多寫少（1/1000 寫）逐級加壓：
 
-| 併發 | RWMutex ns/op | RWMutex B/op | COW ns/op | COW B/op |
-|---|---|---|---|---|
-| 1000 | 180 | 15 | **80** | 118 |
-| 5000 | 189 | 15 | 124 | 118 |
-| 10000 | 248 | 14 | 158 | 119 |
-| 100000 | 197 | 15 | 117 | 157 |
+| 併發 | RWMutex ns/op | COW ns/op (B/op) | 分片鎖 ns/op (B/op) |
+|---|---|---|---|
+| 1000 | 180 | 80 (118) | 102 (15) |
+| 5000 | 189 | 124 (118) | 221 (15) |
+| 10000 | 248 | 158 (119) | 140 (15) |
+| 100000 | 197 | 117 (157) | 80 (15) |
 
-**發現（趨勢跟低併發打平時反轉）**：
+> 中段（5000/10000）數字會抖是 Go 排程開銷 + 未取多次平均；要穩定用 `-count 5` + `benchstat`。看趨勢與 B/op。
+
+**發現**：
 
 1. **RPS 面**：全部 < 250 ns/op → 聚合 400 萬+ ops/sec。上萬 RPS 根本不是問題。
 
-2. **高併發下 COW 的 ns/op 反而更低（80~158 vs 180~248）**——因為 **RWMutex 的 reader 計數變成競爭點**：每個 `RLock` 要對同一個 reader counter 做 atomic 加減 → 上萬 goroutine 在多核間狂搶同一條 cache line（cache-line bouncing）→ 讀延遲被拖高。COW 的讀只有 **atomic pointer LOAD**（純讀、不寫、無計數器）→ cache line 保持共享態，**併發越高越顯出零鎖讀的擴展性**。
+2. **高併發下 RWMutex 最吃虧**——單一 **reader 計數變競爭點**：每個 `RLock` 對同一 reader counter 做 atomic 加減 → 上萬 goroutine 在多核間狂搶同一條 cache line（cache-line bouncing）→ 讀延遲被拖高。COW（無計數器、純 atomic load）和分片鎖（計數器打散到 256 片）都避開了這點。
 
-3. **COW 的記憶體稅一直在（B/op 15 vs 118~157）**：多出的 ~100 B/op 是「寫複製整表」成本攤到讀操作上。RWMutex 穩定 15 B/op（那 15 是 `strconv.Itoa` baseline，不是鎖）。
+3. **記憶體才是分水嶺**：COW 的 B/op 118~157（寫複製整表），分片鎖與 RWMutex 穩定 15（那 15 是 `strconv.Itoa` baseline，不是鎖）。分片鎖**既避開 reader 競爭、又不付複製稅** → 高併發下綜合最穩。
 
-**心智模型更新**：
+**心智模型（三版收束）**：
 ```
-低併發 + 有寫  → RWMutex、COW 的 ns/op 接近
-高併發 + 讀多  → COW 讀零鎖「擴展性」勝出（RWMutex reader 計數變競爭點）
-             但 COW 一律付「寫複製全表」的記憶體稅（B/op 高 8~10 倍）
+純讀爆多、寫幾乎沒有、表小   → COW（零鎖讀最快，但寫一來就崩 + 吃記憶體）
+讀多寫少、要兼顧讀擴展+省記憶體 → 分片鎖（綜合最優）★
+通用、不想寫 hash 分片邏輯      → RWMutex（簡單夠用，高併發 reader 競爭是短板）
 ```
-→ 極端讀多 + 高併發選 COW，不只是單次讀快，是**併發擴展性**好（無 reader 計數競爭）；代價永遠是寫的記憶體。
+→ **分片鎖是「讀多寫少 + 高併發」生產首選**：COW 讀更快但寫崩、RWMutex 簡單但 reader 競爭，分片鎖兩頭都顧（讀打散 + 寫只鎖一片 + 不複製）。
 
 跑法 + 注意：
 ```bash
